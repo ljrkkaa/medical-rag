@@ -4,7 +4,11 @@ from typing import List, Dict, Any, Optional, Union
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.documents import Document
-from langchain_core.runnables import RunnablePassthrough, RunnableParallel, RunnableLambda
+from langchain_core.runnables import (
+    RunnablePassthrough,
+    RunnableParallel,
+    RunnableLambda,
+)
 from ..config.models import *
 from ..core.KnowledgeBase import MedicalHybridKnowledgeBase
 from ..core.HybridRetriever import MedicalHybridRetriever
@@ -26,30 +30,34 @@ class SimpleRAG(BasicRAG):
         super().__init__(config, search_config)
         # 初始化向量知识库和文档检索器
         self.knowledge_base = MedicalHybridKnowledgeBase(config)
-        self.milvus_retriever: BaseRetriever = MedicalHybridRetriever(self.knowledge_base, self.search_config)
-        
+        self.milvus_retriever: BaseRetriever = MedicalHybridRetriever(
+            self.knowledge_base, self.search_config
+        )
+
         # 初始化LLM
         self.llm = create_llm_client(config.llm)
         # 设置prompt模板
         self.prompt = self._setup_dialogue_rag_prompt()
         # 构建RAG链
         self._setup_chain()
-        
+
         logger.info("BasicRAG 系统初始化完成")
 
     def _setup_dialogue_rag_prompt(self) -> ChatPromptTemplate:
         """设置提示模板"""
         template = get_prompt_template("basic_rag")  # 获取基础RAG的提示词模板
-        
+
         if isinstance(template, dict):
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", template["system"]),
-                ("human", template["user"]),
-            ])
+            prompt = ChatPromptTemplate.from_messages(
+                [
+                    ("system", template["system"]),
+                    ("human", template["user"]),
+                ]
+            )
         else:
             # 简单的字符串模板
             prompt = ChatPromptTemplate.from_template(template)
-        
+
         return prompt
 
     def _setup_chain(self):
@@ -57,17 +65,23 @@ class SimpleRAG(BasicRAG):
             documents: List[Document] = inputs["milvus_result"]["documents"]
             parts = []
             for i, d in enumerate(documents):
-                parts.append(f"## 文档{i+1}：\n{d.page_content}\n")
+                parts.append(f"## 文档{i + 1}：\n{d.page_content}\n")
             return "".join(parts)
 
         def strip_think_and_time(msg: AIMessage):
+            # 从 LLM 返回消息中提取文本内容
             text = msg.content
+            # 去掉 <think>...</think> 思维链片段，避免暴露中间推理内容
+            # re.DOTALL 让 "." 可以匹配换行，确保多行 think 片段也能被清理
             cleaned = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL)
+            # total_duration 常见单位为纳秒，这里换算为秒，便于前端展示
             dur = msg.response_metadata.get("total_duration", 0) / 1e9
+            # 统一返回：清洗后的答案 + 生成耗时（秒）
             return {"answer": cleaned.strip(), "generate_time": dur}
 
-
         # 1) 检索：从 inputs["input"] 取查询，再喂给 retriever，结果放入 inputs["documents"]
+        # assign 决定“上下文键名”，SearchRequest.output_fields 决定“数据库返回列”。
+        # with_config 每个节点有名字 可以可视化 pipeline
         retrieve = RunnablePassthrough.assign(
             milvus_result=self.milvus_retriever
         ).with_config(run_name="retrieve_documents")
@@ -85,21 +99,18 @@ class SimpleRAG(BasicRAG):
         )
 
         # 4) 把答案挂回到上下文中，保留 documents 等键
+        # RunnablePassthrough.assign(llm=generate) 的含义是：把 generate 这条子链的输出，挂到上下文字典的 llm 键下。
         self.rag_chain = (
-            retrieve
-            | format_docs
-            | RunnablePassthrough.assign(llm=generate)
+            retrieve | format_docs | RunnablePassthrough.assign(llm=generate)
         ).with_config(run_name="rag")
 
         logger.info("RAG链构建完成")
 
     def answer(
-        self, 
-        query: str, 
-        return_document: bool = False
+        self, query: str, return_document: bool = False
     ) -> Union[str, Dict[str, Union[str, List[Document]]]]:
         logger.info(f"处理问题: {query}")
-        
+
         try:
             result = self.rag_chain.invoke({"input": query})
             answer = result["llm"]["answer"]
@@ -108,12 +119,12 @@ class SimpleRAG(BasicRAG):
                     "answer": answer,
                     "documents": result["milvus_result"]["documents"],
                     "search_time": result["milvus_result"]["search_time"],
-                    "generation_time": result["llm"]["generate_time"]
+                    "generation_time": result["llm"]["generate_time"],
                 }
             return {
                 "answer": answer,
                 "search_time": result["milvus_result"]["search_time"],
-                "generation_time": result["llm"]["generate_time"]
+                "generation_time": result["llm"]["generate_time"],
             }
         except Exception as e:
             logger.error(f"RAG处理失败: {e}")
@@ -124,12 +135,14 @@ class SimpleRAG(BasicRAG):
                     "answer": error_msg,
                     "documents": [],
                     "search_time": 0,
-                    "generation_time": 0
+                    "generation_time": 0,
                 }
             return {"answer": error_msg, "search_time": 0, "generation_time": 0}
 
     def update_search_config(self, search_config: SearchRequest):
         """更新检索配置并重建链"""
-        self.milvus_retriever = MedicalHybridRetriever(self.knowledge_base, search_config)  # 重新设置search配置
+        self.milvus_retriever = MedicalHybridRetriever(
+            self.knowledge_base, search_config
+        )  # 重新设置search配置
         self._setup_chain()
         logger.info(f"搜索配置已更新: {search_config}")

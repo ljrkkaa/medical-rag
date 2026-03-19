@@ -9,6 +9,11 @@ from .models import AppConfig
 from typing import Dict, List, Optional, Literal, Any, Union
 from pydantic import BaseModel, Field
 import re
+from dotenv import load_dotenv
+import os
+
+# 加载 .env 文件
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 

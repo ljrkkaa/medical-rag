@@ -26,6 +26,7 @@ def _init_seg_worker(domain_model: str):
     """
     global _SEG
     import pkuseg as _pk  # 避免主进程/子进程导入冲突
+    # 使用 pkuseg 医疗领域分词模型，支持并行分词处理。
     _SEG = _pk.pkuseg(model_name=domain_model)
 
 def _cut_worker(text: str) -> List[str]:
@@ -39,12 +40,12 @@ def _cut_worker(text: str) -> List[str]:
 class Vocabulary:
     """维护 token->id 与 id->df，用于稀疏向量化"""
     def __init__(self):
-        self.token2id: Dict[str, int] = {}
-        self.df: Dict[int, int] = {}
+        self.token2id: Dict[str, int] = {}  # token → 词表ID
+        self.df: Dict[int, int] = {}    # 词ID → 文档频率
         self.N: int = 0            # 文档总数
         self.sum_dl: int = 0       # 所有文档长度之和（可选，用于 avgdl）
-        # 可选：冻结后缓存
-        self.idf_arr: List[float] | None = None
+        # 可选：冻结后缓存 IDF缓存
+        self.idf_arr: List[float] | None = None 
 
     def add_document(self, tokens: List[str]):
         self.N += 1
@@ -159,11 +160,12 @@ class BM25Vectorizer:
     ) -> Dict[int, float]:
         """
         允许传入已分好的 tokens（建议并行切好后再喂这里）
+        输出: Dict[int, float] 稀疏向量  
         """
         if update_vocab:
             self.vocab.add_document(tokens)
 
-        # 查询阶段要容忍 OOV
+        # 查询阶段要容忍 OOV 构建词频字典 tf
         tf: Dict[int, int] = {}
         for t in tokens:
             tid = self.vocab.token2id.get(t)

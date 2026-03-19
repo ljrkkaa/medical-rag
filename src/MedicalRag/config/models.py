@@ -18,7 +18,7 @@ class MilvusConfig(BaseModel):
 # =============================================================================
 class DenseConfig(BaseModel):
     """稠密向量配置"""
-    provider: Literal['openai', 'ollama'] = 'ollama'
+    provider: Literal['openai', 'ollama', 'embedding'] = 'embedding'
     model: str
     base_url: Optional[str] = None
     env_key_name: Optional[str] = None
@@ -137,6 +137,8 @@ class FusionSpec(BaseModel):
 class SingleSearchRequest(BaseModel):
     anns_field: AnnsField = Field("summary_dense", description="向量检索字段")
     metric_type: Literal["COSINE","IP"] = Field("COSINE", description="向量距离计算指标,除了稀疏向量,其余都用'COSINE'")
+    # 稠密向量（如 HNSW） → ef：搜索效率与精度的折中参数
+    # 稀疏向量 → drop_ratio_search：用于控制检索中丢弃文档的比例（float）
     search_params: dict = Field({"ef": 64}, description="如果是稀疏向量检索,那么应该指定drop_ratio_search,值为float,例如0.0,否则指定参数ef,值为int")
     limit: int = Field(default=50, gt=0, le=500, description="限制这个向量检索字段返回的多少条数据")
     expr: Optional[str] = Field("", description="过滤不符合这个表达式的数据,例如当需要筛选数据源时,填入:'source == qa',一般不需要更改,除非用户指定")

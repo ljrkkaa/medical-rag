@@ -9,14 +9,14 @@ from tqdm import tqdm
 
 
 def _chunks(seq: Iterable[Any], size: int):
-    buf = []
-    for x in seq:
-        buf.append(x)
-        if len(buf) >= max(1, size):
-            yield buf
-            buf = []
-    if buf:
-        yield buf
+    buf = []  # 临时缓冲区，用来存放当前块
+    for x in seq:  # 遍历输入序列
+        buf.append(x)  # 把元素加入缓冲区
+        if len(buf) >= max(1, size):  # 如果缓冲区已达到块大小
+            yield buf  # 返回当前块
+            buf = []  # 清空缓冲区，准备下一块
+    if buf:  # 最后可能剩余不满 size 的元素
+        yield buf  # 返回剩余的块
 
 
 def _maybe_update_progress(pbar, progress_fn, inc: int, done_total: list[int]):

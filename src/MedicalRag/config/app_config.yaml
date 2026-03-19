@@ -7,16 +7,12 @@ milvus:
 
 embedding:
   summary_dense:
-    provider: openai
-    env_key_name: DASHSCOPE_API_KEY
-    model: text-embedding-v4
-    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    provider: embedding
+    model: BAAI/bge-m3
     dimension: 1024
   text_dense:
-    provider: openai
-    env_key_name: DASHSCOPE_API_KEY
-    model: text-embedding-v4
-    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    provider: embedding
+    model: BAAI/bge-m3
     dimension: 1024
   text_sparse:
     provider: self
@@ -31,9 +27,9 @@ embedding:
 
 llm:
   provider: openai
-  model: qwen3.5-plus
-  env_key_name: DASHSCOPE_API_KEY
-  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  model: deepseek-chat
+  env_key_name: DEEPSEEK_API_KEY
+  base_url: https://api.deepseek.com/v1
   temperature: 0.1
 
 data:

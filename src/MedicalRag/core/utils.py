@@ -6,6 +6,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.embeddings import Embeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings  
 from langchain_ollama import ChatOllama, OllamaEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from ..config.models import LLMConfig, DenseConfig
 import os
 
@@ -72,6 +73,17 @@ def create_embedding_client(config: DenseConfig) -> Embeddings:
             kwargs["base_url"] = config.base_url
         
         return OllamaEmbeddings(**kwargs)
+    
+    elif config.provider == "embedding":
+        # 使用本地torch加载embedding模型 (如 bge-m3)
+        kwargs = {
+            "model_name": config.model,
+            "encode_kwargs": {"normalize_embeddings": True}
+        }
+        # 指定 device 为 cuda 或 cpu
+        kwargs["model_kwargs"] = {"device": "cuda"}
+        
+        return HuggingFaceEmbeddings(**kwargs)
     
     else:
         raise ValueError(f"不支持的嵌入提供商: {config.provider}")

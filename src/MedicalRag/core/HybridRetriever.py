@@ -11,10 +11,12 @@ logger = logging.getLogger(__name__)
 class MedicalHybridRetriever(BaseRetriever):
     """医疗混合检索器 - LangChain标准接口"""
     
+    # 类属性类型声明
     knowledge_base: MedicalHybridKnowledgeBase
     search_config: SearchRequest
     
     def __init__(self, knowledge_base: MedicalHybridKnowledgeBase, search_config: SearchRequest):
+        # 调用父类初始化
         super().__init__(knowledge_base=knowledge_base, search_config=search_config)
     
     def _get_relevant_documents(
