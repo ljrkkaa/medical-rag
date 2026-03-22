@@ -9,7 +9,9 @@ from pathlib import Path
 from .KnowledgeBase import MedicalHybridKnowledgeBase
 from ..embed.sparse import Vocabulary
 
-get_resolve_path = lambda path, file=__file__: (Path(file).parent / Path(path)).resolve()
+get_resolve_path = lambda path, file=__file__: (
+    Path(file).parent / Path(path)
+).resolve()
 
 logger = logging.getLogger(__name__)
 
@@ -33,25 +35,54 @@ def get_stopwords(source="all"):
         a set, 停用词表集合
     """
 
-    supported_source = ["cn", "baidu", "hit", "scu", "marimo", "ict", "iso", "all", 'en']
+    supported_source = [
+        "cn",
+        "baidu",
+        "hit",
+        "scu",
+        "marimo",
+        "ict",
+        "iso",
+        "all",
+        "en",
+    ]
     if source not in supported_source:
-        raise NotImplementedError("请求了未知来源，请使用`help(stopwords)`查看支持的来源")
-    return set(get_resolve_path(f"./stopwords/stopwords.zh.{source}.txt").read_text(encoding='utf8').strip().split())
+        raise NotImplementedError(
+            "请求了未知来源，请使用`help(stopwords)`查看支持的来源"
+        )
+    return set(
+        get_resolve_path(f"./stopwords/stopwords.zh.{source}.txt")
+        .read_text(encoding="utf8")
+        .strip()
+        .split()
+    )
 
 
-def prepare_multi_vector_documents(data_config: DataConfig, raw_documents: List[Dict[str, Any]]) -> List[Document]:
+def prepare_multi_vector_documents(
+    data_config: DataConfig, raw_documents: List[Dict[str, Any]]
+) -> List[Document]:
     documents = []
-        
+
+    def _read(record: Dict[str, Any], field_name: Any, default: Any):
+        """按配置键读取记录字段；field_name 为空时回退默认值。"""
+        if isinstance(field_name, str) and field_name:
+            return record.get(field_name, default)
+        return default
+
     for record in tqdm(raw_documents, desc="预处理文档"):
         summary = record.get(data_config.summary_field, "")
         document = record.get(data_config.document_field, "")
         summary = "" if summary is None else str(summary)
         document = "" if document is None else str(document)
-        source = record.get(data_config.source_field, data_config.default_source)
-        source_name = record.get(data_config.source_name_field, data_config.default_source_name)
+        source = _read(record, data_config.source_field, data_config.default_source)
+        source_name = _read(
+            record, data_config.source_name_field, data_config.default_source_name
+        )
+        domain = _read(record, data_config.domain_field, data_config.default_domain)
         source = "" if source is None else str(source)
         source_name = "" if source_name is None else str(source_name)
-        
+        domain = "" if domain is None else str(domain)
+
         # 构建完整文本（用于BM25和text_dense）
         # 如果是 QA 数据，则 summary = 问题、 document = 回答 、 text = 问题 + 回答
         # 如果是 literature 文献数据，则 summary = 特殊抽取的文段摘要、document = 正文、text = document = 正文
@@ -59,83 +90,92 @@ def prepare_multi_vector_documents(data_config: DataConfig, raw_documents: List[
             text = f"问题: {summary}\n\n答案: {document}"
         else:
             text = document
-        
+
         # 构建元数据
         metadata = {
             "summary": summary,
             "document": document,
             "source": source,
             "source_name": source_name,
-            "hash_id": hashlib.md5(summary.encode('UTF-8')).hexdigest(),
-            "lt_doc_id": record.get(data_config.lt_doc_id_field, data_config.default_lt_doc_id),
-            "chunk_id": record.get(data_config.chunk_id_field, data_config.default_chunk_id)
+            "domain": domain,
+            "hash_id": hashlib.md5(summary.encode("UTF-8")).hexdigest(),
+            "lt_doc_id": _read(
+                record, data_config.lt_doc_id_field, data_config.default_lt_doc_id
+            ),
+            "chunk_id": _read(
+                record, data_config.chunk_id_field, data_config.default_chunk_id
+            ),
         }
-        
+
         # 保留其他字段
         for key, value in record.items():
             if key not in [
                 data_config.summary_field,
                 data_config.document_field,
+                data_config.domain_field,
                 data_config.source_field,
                 data_config.source_name_field,
                 data_config.lt_doc_id_field,
-                data_config.chunk_id_field
+                data_config.chunk_id_field,
             ]:
                 metadata[key] = value
-        
+
         # 创建文档（page_content用于BM25稀疏向量）
         document = Document(
             page_content=text,  # BM25基于完整文本
-            metadata=metadata
+            metadata=metadata,
         )
-        
+
         documents.append(document)
-    
+
     return documents
 
 
-    
 # 高级入库流水线
 class IngestionPipeline:
     """高级入库流水线 - 使用多向量字段"""
-    
+
     def __init__(self, config: AppConfig):
         self.config = config
         self.kb = MedicalHybridKnowledgeBase(config)
-    
+
     def run(self, raw_data: List[Dict[str, Any]]) -> bool:
         """运行高级入库流水线"""
-        
+
         if self.config.embedding.text_sparse.provider == "self":
-            _vocab = Vocabulary.load(self.config.embedding.text_sparse.vocab_path_or_name)
+            _vocab = Vocabulary.load(
+                self.config.embedding.text_sparse.vocab_path_or_name
+            )
             if _vocab is None:  # 未完成初始化
                 raise RuntimeError("请完成词表初始化，或者把稀疏向量交给Milvus管理")
         try:
             # 1. 初始化多向量字段集合
             logger.info("初始化多向量Milvus集合...")
             _ = self.kb._create_collection()
-            
+
             # 2. 处理数据
             logger.info("预处理多向量字段文档...")
-            documents = prepare_multi_vector_documents(data_config=self.config.data, raw_documents=raw_data)
-            
+            documents = prepare_multi_vector_documents(
+                data_config=self.config.data, raw_documents=raw_data
+            )
+
             # 3. 批量插入
             logger.info(f"开始插入 {len(documents)} 个文档...")
-            batch_size = 10
+            batch_size = 100  # 从 10 提升到 100（结合批量向量化调用，快 5-10 倍）
             total_inserted = 0
-            
+
             for i in tqdm(range(0, len(documents), batch_size)):
-                batch = documents[i:i + batch_size]
+                batch = documents[i : i + batch_size]
                 ids = self.kb.add_documents(batch)
                 total_inserted += ids
-            
-            logger.info(f"开始构建索引")
+
+            logger.info("开始构建索引")
             self.kb.build_index()
-            
+
             logger.info(f"高级入库完成！总共插入 {total_inserted} 个文档")
-            
+
             return True
-            
+
         except Exception:
             logger.exception("高级入库流水线失败")
             return False

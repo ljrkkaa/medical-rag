@@ -182,12 +182,17 @@ export async function apiSearch(
 
 // POST /api/ask
 export async function apiAsk(
-  question: string
+  question: string,
+  options?: { routingMethod?: 'centroid' | 'llm'; routingTopK?: number }
 ): Promise<AskResult> {
   const res = await fetch('/api/ask', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({
+      question,
+      routing_method: options?.routingMethod,
+      routing_top_k: options?.routingTopK,
+    }),
   });
   if (!res.ok) {
     const err = await res.text();

@@ -83,7 +83,6 @@ interface HistoryPanelProps {
   serviceType: 'chat' | 'agent';
   label: string;
   token: string;
-  onNavigate: (page: string) => void;
 }
 
 interface DetailState {
@@ -92,7 +91,7 @@ interface DetailState {
   serviceType: 'chat' | 'agent';
 }
 
-function HistoryPanel({ serviceType, label, token, onNavigate }: HistoryPanelProps) {
+function HistoryPanel({ serviceType, label, token }: HistoryPanelProps) {
   const [open, setOpen] = useState(false);
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -235,13 +234,11 @@ export default function Sidebar({ currentPage, onNavigate, user, onLogout }: Sid
               serviceType="chat"
               label="多轮对话"
               token={user.token}
-              onNavigate={onNavigate}
             />
             <HistoryPanel
               serviceType="agent"
               label="智能 Agent"
               token={user.token}
-              onNavigate={onNavigate}
             />
           </div>
         )}

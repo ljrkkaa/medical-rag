@@ -29,6 +29,12 @@ out/
 .nuxt/
 .storybook-out/
 
-volumes
 .env
-data
+
+# data
+volumes
+data/format_data.jsonl
+data/processed
+data/new
+data/eval/test_datasets.jsonl
+domain_centroids.npz

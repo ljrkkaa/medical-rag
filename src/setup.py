@@ -6,17 +6,18 @@ EXTENSION_PATH = os.path.dirname(os.path.realpath(__file__))
 
 
 INSTALL_REQUIRES = [
-  "langchain>=0.2.0",
-  "langchain-openai>=0.1.0",
-  "pymilvus>=2.4.0",
-  "pydantic>=2.5",
-  "fastapi>=0.110",
-  "uvicorn[standard]>=0.23",
-  "typer>=0.12",
-  "python-dotenv>=1.0",
-  "tqdm>=4.66",
-  "rich>=13.7",
-  "tomli; python_version<'3.11'",
+    "langchain>=0.2.0",
+    "langchain-community>=0.2.0",
+    "langchain-openai>=0.1.0",
+    "pymilvus>=2.4.0",
+    "pydantic>=2.5",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.23",
+    "typer>=0.12",
+    "python-dotenv>=1.0",
+    "tqdm>=4.66",
+    "rich>=13.7",
+    "tomli; python_version<'3.11'",
 ]
 
 # Installation operation

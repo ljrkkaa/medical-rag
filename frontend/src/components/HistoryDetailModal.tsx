@@ -17,6 +17,10 @@ interface RichMessage {
   sub_queries?: string[];
 }
 
+type MessageWithExtra = {
+  extra_data?: string | null;
+};
+
 interface HistoryDetailModalProps {
   sessionId: string;
   sessionTitle: string;
@@ -41,11 +45,12 @@ export default function HistoryDetailModal({
     apiGetSessionMessages(serviceType, sessionId, token)
       .then((raw) => {
         const parsed: RichMessage[] = raw.map((m) => {
+          const maybeExtra = m as unknown as MessageWithExtra;
           const msg: RichMessage = {
             role: m.role,
             content: m.content,
             timestamp: m.timestamp,
-            extra_data: (m as Record<string, unknown>).extra_data as string | null,
+            extra_data: maybeExtra.extra_data ?? null,
           };
           if (msg.extra_data) {
             try {

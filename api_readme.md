@@ -13,10 +13,10 @@ cd /path/to/medical-rag
 python run_api.py
 
 # 交互式文档（Swagger UI）
-open http://localhost:8000/docs
+open http://localhost:8005/docs
 ```
 
-默认监听 `0.0.0.0:8000`，可通过环境变量覆盖：
+默认监听 `0.0.0.0:8005`，可通过环境变量覆盖：
 
 ```bash
 API_HOST=127.0.0.1 API_PORT=9000 python run_api.py
@@ -449,7 +449,7 @@ data: {"type": "done"}
 ## curl 快速测试
 
 ```bash
-BASE=http://localhost:8000
+BASE=http://localhost:8005
 
 # 健康检查
 curl $BASE/api/health

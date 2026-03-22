@@ -23,6 +23,7 @@ export interface MessageItem {
 export interface SourceDoc {
   source?: string;
   source_name?: string;
+  domain?: string;
   distance?: number;
   summary?: string;
   content_preview: string;
@@ -77,6 +78,7 @@ export interface SearchResult {
   metadata?: Record<string, unknown>;
   source?: string;
   source_name?: string;
+  domain?: string;
   content_preview?: string;
   [key: string]: unknown;
 }

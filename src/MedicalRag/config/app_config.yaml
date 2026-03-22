@@ -2,7 +2,7 @@ milvus:
   uri: http://localhost:19530
   token: null
   collection_name: medical_knowledge
-  drop_old: true
+  drop_old: false
   auto_id: false
 
 embedding:
@@ -10,10 +10,18 @@ embedding:
     provider: embedding
     model: BAAI/bge-m3
     dimension: 1024
+    preload: true
+    multi_gpu: true
+    num_gpus: 4
+    encode_batch_size: 512
   text_dense:
     provider: embedding
     model: BAAI/bge-m3
     dimension: 1024
+    preload: true
+    multi_gpu: true
+    num_gpus: 4
+    encode_batch_size: 512
   text_sparse:
     provider: self
     vocab_path_or_name: vocab.pkl.gz
@@ -35,8 +43,14 @@ llm:
 data:
   summary_field: question
   document_field: answer
+  domain_field: domain
+  source_field: source
+  source_name_field: source_name
+  lt_doc_id_field: lt_doc_id
+  chunk_id_field: chunk_id
   default_source: qa
   default_source_name: huatuo_qa
+  default_domain: general
   default_lt_doc_id: ''
   default_chunk_id: -1
 
@@ -52,6 +66,69 @@ multi_dialogue_rag:
 agent:
   mode: analysis
   max_attempts: 2  # 每一个子目标查询的最大重试次数，否则进行联网搜索
+  max_ask_num: 2  # 主动追问最大轮次
+  console_debug: true  # Agent链路调试日志
   network_search_enabled: True  # 是否启用联网搜索
   network_search_cnt: 10  # 开启联网搜索时，返回的数量
   auto_search_param: True  # 是否开启确定搜索参数
+  search_workflow_version: v2
+  enable_condense_question: true
+  web_search_provider: searxng
+  searx_host: http://127.0.0.1:8081
+  searx_language: zh-CN
+  searx_engines: [wiki]
+  searx_categories: null
+  searx_time_range: null
+  searx_safe_search: 1
+  searx_v2_min_results: 20
+  searx_v2_max_results: 30
+  searx_v2_select_top_k: 6
+  searx_v2_fetch_timeout_sec: 5.0
+  searx_v2_max_content_chars: 3000
+
+routing:
+  method: centroid   # 可选: centroid | llm
+  centroid_file: domain_centroids.npz
+  preferred_domain: encyclopedia
+  always_include_preferred_domain: true
+  top_k: 2
+  auto_build_centroid: true
+  centroid_build_mode: milvus
+  centroid_processed_dir: data/processed
+  centroid_batch_size: 2048
+  fallback_domains: [andrology, dentistry, dermatology, internal_medicine, neurology, obstetrics_gynecology, oncology, otolaryngology, pediatrics, psychology, reproductive_health, surgery]
+  # llm:  # 可选：给路由单独指定模型，不填则复用全局 llm
+  #   provider: openai
+  #   model: deepseek-chat
+  #   env_key_name: DEEPSEEK_API_KEY
+  #   base_url: https://api.deepseek.com/v1
+  #   temperature: 0.0
+
+staged_retrieval:
+  enabled: true
+  per_domain_limit: 10     # 每个domain独立检索后保留10
+  merge_limit: 30          # 合并候选总数（考虑默认 encyclopedia + 路由 domain）
+  coarse_rank:
+    weight_distance: 0.6
+    weight_rank: 0.25
+    weight_domain_prior: 0.15
+  colbert:
+    enabled: true
+    model_name: bert-base-uncased
+    preload: true
+    max_length: 512
+    top_k: 5
+    batch_size: 16
+    device: auto
+
+retrieval:
+  use_summary_dense: true
+  use_text_sparse: true
+  dense_limit: 10
+  sparse_limit: 10
+  dense_ef: 64
+  sparse_drop_ratio_search: 0.0
+  final_limit: 10
+  fusion_method: rrf      # rrf | weighted
+  rrf_k: 60
+  weighted_weights: [0.8, 0.2]

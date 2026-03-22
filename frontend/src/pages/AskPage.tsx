@@ -18,6 +18,8 @@ export default function AskPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<QueryHistory[]>([]);
+  const [routingMethod, setRoutingMethod] = useState<'centroid' | 'llm'>('centroid');
+  const [routingTopK, setRoutingTopK] = useState(1);
 
   const handleAsk = async () => {
     if (!question.trim() || loading) return;
@@ -26,7 +28,10 @@ export default function AskPage() {
     setError(null);
 
     try {
-      const result = await apiAsk(q);
+      const result = await apiAsk(q, {
+        routingMethod,
+        routingTopK,
+      });
       const entry: QueryHistory = {
         id: Date.now().toString(),
         question: q,
@@ -70,7 +75,36 @@ export default function AskPage() {
           disabled={loading}
           className="w-full border border-slate-200 rounded-lg px-3 py-3 text-sm text-slate-800 placeholder-slate-400 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-slate-50 scrollbar-thin"
         />
-        <div className="flex items-center justify-between mt-3">
+        <div className="flex flex-wrap items-center justify-between mt-3 gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">路由方法</span>
+              <select
+                value={routingMethod}
+                onChange={(e) => setRoutingMethod(e.target.value as 'centroid' | 'llm')}
+                className="text-xs border border-slate-200 rounded-md px-2 py-1 text-slate-700 bg-white"
+                disabled={loading}
+              >
+                <option value="centroid">centroid</option>
+                <option value="llm">llm</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">TopK</span>
+              <select
+                value={routingTopK}
+                onChange={(e) => setRoutingTopK(Number(e.target.value))}
+                className="text-xs border border-slate-200 rounded-md px-2 py-1 text-slate-700 bg-white"
+                disabled={loading}
+              >
+                {[1, 2, 3, 4, 5].map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
           <p className="text-xs text-slate-400">Ctrl+Enter 发送</p>
           <button
             onClick={handleAsk}

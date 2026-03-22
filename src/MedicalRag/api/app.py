@@ -47,8 +47,10 @@ async def lifespan(app: FastAPI):
     state["config"] = config
     state["simple_rag"] = SimpleRAG(config)
     state["multi_rag"] = MultiDialogueRag(config)
-    state["search_agent"] = SearchGraph(config, power_model=create_llm_client(config.llm))
-    state["agent_sessions"] = {}   # session_id -> MedicalAgent
+    state["search_agent"] = SearchGraph(
+        config, power_model=create_llm_client(config.llm)
+    )
+    state["agent_sessions"] = {}  # session_id -> MedicalAgent
     yield
     state.clear()
 
@@ -73,6 +75,7 @@ app.add_middleware(
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 async def run_sync(fn, *args, **kwargs):
     """Run a blocking function in a thread pool without blocking the event loop."""
     loop = asyncio.get_running_loop()
@@ -94,6 +97,7 @@ def _doc_to_source(doc: Document) -> dict:
     return {
         "source": doc.metadata.get("source"),
         "source_name": doc.metadata.get("source_name"),
+        "domain": doc.metadata.get("domain"),
         "distance": doc.metadata.get("distance"),
         "summary": doc.metadata.get("summary"),
         "content_preview": doc.page_content[:200],
@@ -119,9 +123,11 @@ def get_optional_user(request: Request) -> Optional[dict]:
 # Pydantic schemas
 # ---------------------------------------------------------------------------
 
+
 class SourceDoc(BaseModel):
     source: Optional[str] = None
     source_name: Optional[str] = None
+    domain: Optional[str] = None
     distance: Optional[float] = None
     summary: Optional[str] = None
     content_preview: str
@@ -167,8 +173,15 @@ class IngestResponse(BaseModel):
 class SearchDocRequest(BaseModel):
     query: str
     limit: int = Field(default=5, ge=1, le=50)
-    filter_expr: Optional[str] = Field(default=None, description="Milvus过滤表达式，如 'source == \"qa\"'")
-    use_hybrid: bool = Field(default=True, description="True=稠密+稀疏混合检索，False=仅稠密")
+    domain: Optional[str] = Field(
+        default=None, description="按领域过滤（可选），如 'internal'、'surgery'"
+    )
+    filter_expr: Optional[str] = Field(
+        default=None, description="Milvus过滤表达式，如 'source == \"qa\"'"
+    )
+    use_hybrid: bool = Field(
+        default=True, description="True=稠密+稀疏混合检索，False=仅稠密"
+    )
 
 
 class SearchDocResponse(BaseModel):
@@ -180,6 +193,13 @@ class SearchDocResponse(BaseModel):
 # --- Ask (single-turn RAG) ---
 class AskRequest(BaseModel):
     question: str
+    domain: Optional[str] = Field(default=None, description="按领域过滤（可选）")
+    routing_method: Optional[Literal["centroid", "llm"]] = Field(
+        default=None, description="路由方法：centroid=向量中心，llm=LLM判别"
+    )
+    routing_top_k: Optional[int] = Field(
+        default=None, ge=1, le=5, description="路由候选数（1-5）"
+    )
 
 
 class AskResponse(BaseModel):
@@ -248,6 +268,7 @@ class AgentResponse(BaseModel):
 # Auth Endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.post("/api/auth/register", summary="注册")
 async def register(req: RegisterRequest):
     try:
@@ -284,13 +305,16 @@ async def me(request: Request):
 # History Endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.get("/api/history/{service_type}", summary="会话列表")
 async def list_sessions(service_type: str, request: Request):
     user = get_optional_user(request)
     if not user:
         return JSONResponse(status_code=401, content={"detail": "需要登录"})
     if service_type not in ("chat", "agent"):
-        return JSONResponse(status_code=400, content={"detail": "service_type 必须为 chat 或 agent"})
+        return JSONResponse(
+            status_code=400, content={"detail": "service_type 必须为 chat 或 agent"}
+        )
     sessions = await run_sync(_auth.list_sessions, user["user_id"], service_type)
     return sessions
 
@@ -320,6 +344,7 @@ async def delete_session(service_type: str, session_id: str, request: Request):
 # Endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.get("/api/health", response_model=HealthResponse, summary="健康检查")
 async def health():
     services = {
@@ -337,6 +362,7 @@ async def health():
 @app.post("/api/ingest", response_model=IngestResponse, summary="录入数据")
 async def ingest(req: IngestRequest):
     """将医疗问答记录写入 Milvus 向量数据库。"""
+
     def _run():
         cfg = deepcopy(state["config"])
         cfg.milvus.drop_old = req.drop_old
@@ -355,11 +381,21 @@ async def ingest(req: IngestRequest):
 @app.post("/api/search", response_model=SearchDocResponse, summary="检索文档")
 async def search_documents(req: SearchDocRequest):
     """在知识库中进行向量检索，返回原始文档列表（不经过LLM生成）。"""
+
     def _run():
         config = state["config"]
         kb = state["simple_rag"].knowledge_base
         collection_name = config.milvus.collection_name
-        output_fields = ["summary", "document", "source", "source_name", "lt_doc_id", "chunk_id", "text"]
+        output_fields = [
+            "summary",
+            "document",
+            "source",
+            "source_name",
+            "domain",
+            "lt_doc_id",
+            "chunk_id",
+            "text",
+        ]
 
         if req.use_hybrid:
             requests = [
@@ -378,7 +414,7 @@ async def search_documents(req: SearchDocRequest):
                     expr=req.filter_expr or "",
                 ),
             ]
-            fuse = FusionSpec(method="rrf", k=60)
+            fuse = FusionSpec(method="rrf", k=60, weights=None)
         else:
             requests = [
                 SingleSearchRequest(
@@ -398,6 +434,7 @@ async def search_documents(req: SearchDocRequest):
             output_fields=output_fields,
             fuse=fuse,
             limit=req.limit,
+            domain=req.domain,
         )
         t0 = time.time()
         docs = kb.search(search_req)
@@ -414,8 +451,21 @@ async def search_documents(req: SearchDocRequest):
 @app.post("/api/ask", response_model=AskResponse, summary="单轮问答")
 async def ask(req: AskRequest):
     """单轮医疗问答（SimpleRAG），每次独立，不保留对话历史。"""
+    config = state["config"]
+    if req.routing_method is not None or req.routing_top_k is not None:
+        config = config.model_copy(deep=True)
+        if req.routing_method is not None:
+            config.routing.method = req.routing_method
+        if req.routing_top_k is not None:
+            config.routing.top_k = req.routing_top_k
+
     result = await run_sync(
-        state["simple_rag"].answer, req.question, return_document=True
+        SimpleRAG(config).answer,
+        req.question,
+        return_document=True,
+        domain=req.domain,
+        routing_method=req.routing_method,
+        routing_top_k=req.routing_top_k,
     )
     sources = [SourceDoc(**_doc_to_source(d)) for d in result.get("documents", [])]
     return AskResponse(
@@ -443,15 +493,27 @@ async def chat(req: ChatRequest, request: Request):
     if user:
         try:
             import json as _json
+
             rewritten = result.get("llm_rewritten_query", {})
-            rewritten_str = rewritten.get("msg", "") if isinstance(rewritten, dict) else ""
-            chat_extra = _json.dumps({
-                "rewritten_query": rewritten_str,
-                "documents": [_doc_to_source(d) for d in result.get("documents", [])],
-            }, ensure_ascii=False)
-            _auth.upsert_session(req.session_id, user["user_id"], "chat", title=req.question[:20])
+            rewritten_str = (
+                rewritten.get("msg", "") if isinstance(rewritten, dict) else ""
+            )
+            chat_extra = _json.dumps(
+                {
+                    "rewritten_query": rewritten_str,
+                    "documents": [
+                        _doc_to_source(d) for d in result.get("documents", [])
+                    ],
+                },
+                ensure_ascii=False,
+            )
+            _auth.upsert_session(
+                req.session_id, user["user_id"], "chat", title=req.question[:20]
+            )
             _auth.save_message(req.session_id, "user", req.question)
-            _auth.save_message(req.session_id, "assistant", result["answer"], extra_data=chat_extra)
+            _auth.save_message(
+                req.session_id, "assistant", result["answer"], extra_data=chat_extra
+            )
         except Exception:
             pass
 
@@ -493,7 +555,9 @@ async def chat_stream(req: ChatRequest, request: Request):
             async for event in multi_rag.rag_chain.astream_events(
                 {
                     "original_input": req.question,
-                    "running_summary": multi_rag._running_summaries.get(req.session_id, ""),
+                    "running_summary": multi_rag._running_summaries.get(
+                        req.session_id, ""
+                    ),
                     "session_id": req.session_id,
                 },
                 config={"configurable": {"session_id": req.session_id}},
@@ -509,7 +573,9 @@ async def chat_stream(req: ChatRequest, request: Request):
                     output = event["data"].get("output", {})
                     if isinstance(output, dict):
                         rq = output.get("llm_rewritten_query", {})
-                        rewritten = rq.get("msg", "") if isinstance(rq, dict) else str(rq)
+                        rewritten = (
+                            rq.get("msg", "") if isinstance(rq, dict) else str(rq)
+                        )
                     elif isinstance(output, str):
                         rewritten = output
                     else:
@@ -522,10 +588,16 @@ async def chat_stream(req: ChatRequest, request: Request):
                     output = event["data"].get("output", {})
                     if isinstance(output, dict):
                         milvus_result = output.get("milvus_result", {})
-                        doc_list = milvus_result.get("documents", []) if isinstance(milvus_result, dict) else []
+                        doc_list = (
+                            milvus_result.get("documents", [])
+                            if isinstance(milvus_result, dict)
+                            else []
+                        )
                         if doc_list:
                             accumulated_docs = [_doc_to_source(d) for d in doc_list]
-                            yield _sse_line({"type": "documents", "data": accumulated_docs})
+                            yield _sse_line(
+                                {"type": "documents", "data": accumulated_docs}
+                            )
 
                 elif etype == "on_retriever_end":
                     raw = event["data"].get("output", {})
@@ -536,7 +608,12 @@ async def chat_stream(req: ChatRequest, request: Request):
                     else:
                         doc_list = []
                     if doc_list:
-                        yield _sse_line({"type": "documents", "data": [_doc_to_source(d) for d in doc_list]})
+                        yield _sse_line(
+                            {
+                                "type": "documents",
+                                "data": [_doc_to_source(d) for d in doc_list],
+                            }
+                        )
 
                 elif etype == "on_llm_stream":
                     chunk = event["data"].get("chunk")
@@ -553,7 +630,9 @@ async def chat_stream(req: ChatRequest, request: Request):
         # Update token metadata after streaming completes
         if final_result:
             try:
-                multi_rag._update_tokens_metadata(answer_result=final_result, session_id=req.session_id)
+                multi_rag._update_tokens_metadata(
+                    answer_result=final_result, session_id=req.session_id
+                )
             except Exception:
                 pass
             final_answer = final_result.get("answer", "") or "".join(token_buffer)
@@ -562,14 +641,22 @@ async def chat_stream(req: ChatRequest, request: Request):
             # Persist if authenticated
             if user:
                 try:
-                    _auth.upsert_session(req.session_id, user["user_id"], "chat", title=req.question[:20])
+                    _auth.upsert_session(
+                        req.session_id, user["user_id"], "chat", title=req.question[:20]
+                    )
                     _auth.save_message(req.session_id, "user", req.question)
                     import json as _json
-                    extra = _json.dumps({
-                        "rewritten_query": accumulated_rewrite,
-                        "documents": accumulated_docs,
-                    }, ensure_ascii=False)
-                    _auth.save_message(req.session_id, "assistant", final_answer, extra_data=extra)
+
+                    extra = _json.dumps(
+                        {
+                            "rewritten_query": accumulated_rewrite,
+                            "documents": accumulated_docs,
+                        },
+                        ensure_ascii=False,
+                    )
+                    _auth.save_message(
+                        req.session_id, "assistant", final_answer, extra_data=extra
+                    )
                 except Exception:
                     pass
 
@@ -584,16 +671,21 @@ async def evaluate(req: EvalRequest):
     使用 RAGAS 评测 SimpleRAG 系统质量（耗时较长，约数分钟）。
     返回四项指标：answer_relevancy、faithfulness、context_recall、context_precision。
     """
+
     def _run():
         from datasets import load_dataset
-        from MedicalRag.rag.RagEvaluate import RagasRagEvaluate  # lazy: ragas patches asyncio at import
+        from MedicalRag.rag.RagEvaluate import (
+            RagasRagEvaluate,
+        )  # lazy: ragas patches asyncio at import
+
         config = state["config"]
-        dataset = load_dataset("json", data_files=req.eval_file)["train"]
+        dataset_raw = load_dataset("json", data_files=req.eval_file)["train"]
+        dataset = dataset_raw  # type: ignore[assignment]
         eval_llm = create_llm_client(config.llm)
         eval_embedding = create_embedding_client(config.embedding.summary_dense)
         evaluator = RagasRagEvaluate(
             rag_components=state["simple_rag"],
-            eval_datasets=dataset,
+            eval_datasets=dataset,  # type: ignore[arg-type]
             eval_llm=eval_llm,
             embedding=eval_embedding,
         )
@@ -602,21 +694,27 @@ async def evaluate(req: EvalRequest):
         return result
 
     result = await run_sync(_run)
-    metrics = {k: float(v) for k, v in result.to_pandas().mean().items() if k != "user_input"}
+    metrics = {
+        k: float(v) for k, v in result.to_pandas().mean().items() if k != "user_input"
+    }
     return EvalResponse(sample_size=req.sample_size, metrics=metrics)
 
 
-@app.post("/api/search-agent", response_model=SearchAgentResponse, summary="单轮智能检索Agent")
+@app.post(
+    "/api/search-agent", response_model=SearchAgentResponse, summary="单轮智能检索Agent"
+)
 async def search_agent(req: SearchAgentRequest):
     """
     单轮智能检索 Agent（SearchGraph）。
     支持多步推理、事实核验、可选联网搜索，不保留对话历史。
     """
+
     def _run():
         agent: SearchGraph = state["search_agent"]
         if agent.search_graph is None:
             agent.build_search_graph()
         from langchain_core.messages import HumanMessage as _HM
+
         init_state = {
             "query": req.question,
             "main_messages": [_HM(content=req.question)],
@@ -626,17 +724,21 @@ async def search_agent(req: SearchAgentRequest):
             "retry": agent.config.agent.max_attempts,
             "final": "",
         }
-        out_state = agent.search_graph.invoke(init_state)
+        out_state = agent.search_graph.invoke(init_state)  # type: ignore[union-attr]
         answer = out_state.get("final", "") or out_state.get("summary", "") or "（空）"
         docs = out_state.get("docs", [])
         return answer, docs
 
     answer, docs = await run_sync(_run)
-    sources = [SourceDoc(**_doc_to_source(d)) for d in docs if hasattr(d, "page_content")]
+    sources = [
+        SourceDoc(**_doc_to_source(d)) for d in docs if hasattr(d, "page_content")
+    ]
     return SearchAgentResponse(question=req.question, answer=answer, documents=sources)
 
 
-@app.post("/api/agent", response_model=AgentResponse, summary="多轮智能医疗Agent（阻塞）")
+@app.post(
+    "/api/agent", response_model=AgentResponse, summary="多轮智能医疗Agent（阻塞）"
+)
 async def agent_endpoint(req: AgentRequest, request: Request):
     """
     多轮智能医疗 Agent（MedicalAgent）。
@@ -653,21 +755,31 @@ async def agent_endpoint(req: AgentRequest, request: Request):
         if user:
             try:
                 import json as _json
+
                 final_answer = result.get("final_answer", "")
                 sub_results = result.get("sub_query_results", [])
-                agent_extra = _json.dumps({
-                    "rewritten_query": result.get("rewritten_query", ""),
-                    "sub_queries": [r.get("query", "") for r in sub_results if r.get("query")],
-                    "documents": [
-                        _doc_to_source(d)
-                        for r in sub_results
-                        for d in r.get("docs", [])
-                        if hasattr(d, "page_content")
-                    ],
-                }, ensure_ascii=False)
-                _auth.upsert_session(req.session_id, user["user_id"], "agent", title=req.question[:20])
+                agent_extra = _json.dumps(
+                    {
+                        "rewritten_query": result.get("rewritten_query", ""),
+                        "sub_queries": [
+                            r.get("query", "") for r in sub_results if r.get("query")
+                        ],
+                        "documents": [
+                            _doc_to_source(d)
+                            for r in sub_results
+                            for d in r.get("docs", [])
+                            if hasattr(d, "page_content")
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+                _auth.upsert_session(
+                    req.session_id, user["user_id"], "agent", title=req.question[:20]
+                )
                 _auth.save_message(req.session_id, "user", req.question)
-                _auth.save_message(req.session_id, "assistant", final_answer, extra_data=agent_extra)
+                _auth.save_message(
+                    req.session_id, "assistant", final_answer, extra_data=agent_extra
+                )
             except Exception:
                 pass
 
@@ -705,12 +817,17 @@ async def agent_stream(req: AgentRequest, request: Request):
         final_answer = ""
 
         try:
-            async for update_chunk in agent.app.astream(agent.state, stream_mode="updates"):
+            async for update_chunk in agent.app.astream(
+                agent.state, stream_mode="updates"
+            ):
                 for node_name, updates in update_chunk.items():
                     # Accumulate state (sub_query_results uses LangGraph add reducer)
                     for k, v in updates.items():
                         if k == "sub_query_results" and isinstance(v, list):
-                            accumulated[k] = accumulated.get(k, []) + v
+                            existing = accumulated.get(k, [])
+                            accumulated[k] = (
+                                existing if isinstance(existing, list) else []
+                            ) + v
                         else:
                             accumulated[k] = v
 
@@ -720,39 +837,65 @@ async def agent_stream(req: AgentRequest, request: Request):
                     if node_name == "ask":
                         ask_obj = updates.get("ask_obj")
                         if ask_obj and ask_obj.need_ask:
-                            event = {"type": "clarification", "questions": ask_obj.questions}
+                            event = {
+                                "type": "clarification",
+                                "questions": ask_obj.questions,
+                            }
                         else:
-                            event = {"type": "progress", "message": "正在分析问题，准备检索..."}
+                            event = {
+                                "type": "progress",
+                                "message": "正在分析问题，准备检索...",
+                            }
 
                     elif node_name == "extract_ask_and_reply":
                         bg = updates.get("background_info", "")
                         if bg:
                             yield _sse_line({"type": "background", "data": bg})
-                        event = {"type": "progress", "message": "正在提取用户背景信息..."}
+                        event = {
+                            "type": "progress",
+                            "message": "正在提取用户背景信息...",
+                        }
 
                     elif node_name == "check_update_background":
                         bg = updates.get("background_info", "")
                         if bg:
                             yield _sse_line({"type": "background", "data": bg})
-                        event = {"type": "progress", "message": "正在更新用户背景信息..."}
+                        event = {
+                            "type": "progress",
+                            "message": "正在更新用户背景信息...",
+                        }
 
                     elif node_name == "split_query":
                         sq = updates.get("sub_query")
                         if sq:
-                            queries = sq.sub_query if sq.need_split else [sq.rewrite_query]
-                            event = {"type": "sub_queries", "queries": [q for q in queries if q]}
+                            queries = (
+                                sq.sub_query if sq.need_split else [sq.rewrite_query]
+                            )
+                            event = {
+                                "type": "sub_queries",
+                                "queries": [q for q in queries if q],
+                            }
                         # Also emit rewrite
                         rewritten = updates.get("rewritten_query", "")
                         if not rewritten and sq:
-                            rewritten = sq.rewrite_query if not sq.need_split else (sq.sub_query[0] if sq.sub_query else "")
+                            rewritten = (
+                                sq.rewrite_query
+                                if not sq.need_split
+                                else (sq.sub_query[0] if sq.sub_query else "")
+                            )
                         if rewritten:
                             yield _sse_line({"type": "rewrite", "data": rewritten})
 
                     elif node_name == "search_one":
-                        for r in updates.get("sub_query_results", []):
+                        for r in updates.get("sub_query_results", []):  # type: ignore[arg-type]
                             docs = r.get("docs", [])
                             if docs:
-                                yield _sse_line({"type": "documents", "data": [_doc_to_source(d) for d in docs]})
+                                yield _sse_line(
+                                    {
+                                        "type": "documents",
+                                        "data": [_doc_to_source(d) for d in docs],
+                                    }
+                                )
 
                     elif node_name == "answer":
                         final_answer = updates.get("final_answer", "")
@@ -764,28 +907,37 @@ async def agent_stream(req: AgentRequest, request: Request):
         except Exception as e:
             yield _sse_line({"type": "error", "message": str(e)})
 
-        agent.state = accumulated
+        agent.state = accumulated  # type: ignore[assignment]
 
         # Persist if we got a final answer and user is authenticated
         if final_answer and user:
             try:
-                _auth.upsert_session(req.session_id, user["user_id"], "agent", title=req.question[:20])
+                _auth.upsert_session(
+                    req.session_id, user["user_id"], "agent", title=req.question[:20]
+                )
                 _auth.save_message(req.session_id, "user", req.question)
                 import json as _json
-                agent_extra = _json.dumps({
-                    "rewritten_query": accumulated.get("rewritten_query", ""),
-                    "sub_queries": [
-                        q for r in accumulated.get("sub_query_results", [])
-                        for q in ([r.get("query", "")] if r.get("query") else [])
-                    ],
-                    "documents": [
-                        _doc_to_source(d)
-                        for r in accumulated.get("sub_query_results", [])
-                        for d in r.get("docs", [])
-                        if hasattr(d, "page_content")
-                    ],
-                }, ensure_ascii=False)
-                _auth.save_message(req.session_id, "assistant", final_answer, extra_data=agent_extra)
+
+                agent_extra = _json.dumps(
+                    {
+                        "rewritten_query": accumulated.get("rewritten_query", ""),
+                        "sub_queries": [
+                            q
+                            for r in accumulated.get("sub_query_results", [])  # type: ignore[arg-type]
+                            for q in ([r.get("query", "")] if r.get("query") else [])
+                        ],
+                        "documents": [
+                            _doc_to_source(d)
+                            for r in accumulated.get("sub_query_results", [])  # type: ignore[arg-type]
+                            for d in r.get("docs", [])
+                            if hasattr(d, "page_content")
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+                _auth.save_message(
+                    req.session_id, "assistant", final_answer, extra_data=agent_extra
+                )
             except Exception:
                 pass
 
@@ -797,6 +949,7 @@ async def agent_stream(req: AgentRequest, request: Request):
 # ---------------------------------------------------------------------------
 # Global error handler
 # ---------------------------------------------------------------------------
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

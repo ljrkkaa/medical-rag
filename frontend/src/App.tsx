@@ -8,13 +8,19 @@ import ChatPage from './pages/ChatPage';
 import EvalPage from './pages/EvalPage';
 import SearchAgentPage from './pages/SearchAgentPage';
 import AgentPage from './pages/AgentPage';
-import LoginPage from './pages/LoginPage';
 import LiteraturePage from './pages/LiteraturePage';
 import CaseSearchPage from './pages/CaseSearchPage';
 import DataManagePage from './pages/DataManagePage';
 import ModelSwitchPage from './pages/ModelSwitchPage';
 import ParamsConfigPage from './pages/ParamsConfigPage';
 import type { AuthUser } from './types';
+
+const GUEST_USER: AuthUser = {
+  user_id: 'guest',
+  token: '',
+  role: 'patient',
+  phone: '游客模式',
+};
 
 type PageId =
   | 'health'
@@ -50,39 +56,23 @@ function PageContent({ page, user }: { page: PageId; user: AuthUser }) {
   }
 }
 
-function getDefaultPage(role: string): PageId {
-  if (role === 'admin') return 'health';
-  if (role === 'doctor') return 'search';
-  return 'ask';
-}
-
 export default function App() {
-  const [user, setUser] = useState<AuthUser | null>(() => {
+  const [user, setUser] = useState<AuthUser>(() => {
     try {
       const raw = localStorage.getItem('auth_user');
-      return raw ? (JSON.parse(raw) as AuthUser) : null;
+      return raw ? (JSON.parse(raw) as AuthUser) : GUEST_USER;
     } catch {
-      return null;
+      return GUEST_USER;
     }
   });
 
-  const [currentPage, setCurrentPage] = useState<PageId>(() =>
-    user ? getDefaultPage(user.role) : 'ask'
-  );
-
-  const handleLogin = (u: AuthUser) => {
-    setUser(u);
-    setCurrentPage(getDefaultPage(u.role));
-  };
+  const [currentPage, setCurrentPage] = useState<PageId>(() => 'chat');
 
   const handleLogout = () => {
     localStorage.removeItem('auth_user');
-    setUser(null);
+    setUser(GUEST_USER);
+    setCurrentPage('chat');
   };
-
-  if (!user) {
-    return <LoginPage onLogin={handleLogin} />;
-  }
 
   // Chat and agent pages need to fill the full height
   const isFullHeightPage = currentPage === 'chat' || currentPage === 'agent';

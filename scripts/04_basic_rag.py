@@ -1,28 +1,85 @@
-"""
-基础RAG功能演示
-"""
+import argparse
+import importlib
 import logging
-from MedicalRag.config.loader import ConfigLoader
-from MedicalRag.rag.SimpleRag import SimpleRAG
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+SRC_DIR = ROOT_DIR / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def main():
-    # 加载配置
-    config_manager = ConfigLoader()
-    # 创建基础RAG系统
-    rag = SimpleRAG(config_manager.config)
-    query = "我有点肚子痛，该怎么办？" # 在传统中医中，蜣螂及其粪球"转丸"被用于治疗哪些疾病，具体有哪些药用价值？
-    result = rag.answer(query, return_document=True)
-    print(f"\n检索完成，检索用时：{result['search_time']} s，生成用时：{result['generation_time']} s \n\n{result['answer']}")
-    # 显示参考资料
-    if "documents" in result:
-        print(f"\n参考资料 ({len(result['documents'])} 条)，展示前3条:\n\n")
-        for i, ctx in enumerate(result['documents'][:3], 1):
-            print(f"{i}. 数据源： {ctx.metadata.get('source')} 数据源名：{ctx.metadata.get('source_name')} 向量距离：{ctx.metadata.get('distance')}\n")
-            content = ctx.page_content[:200] + "..." if len(ctx.page_content) > 200 else ctx.page_content
-            print(f"{content}\n\n")
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="基础RAG问答演示")
+    parser.add_argument(
+        "--config", type=str, default="src/MedicalRag/config/app_config.yaml"
+    )
+    parser.add_argument(
+        "--query",
+        type=str,
+        default="右下腹间断性疼痛2年，近几天加重。既往有阑尾切除术史（约2年前）。疼痛多发生于晚饭后及晨起空腹时，无明显缓解。自行口服阿莫西林效果不佳。",
+        help="用户问题",
+    )
+    parser.add_argument(
+        "--show-docs",
+        action="store_true",
+        help="是否展示检索到的参考资料（前3条）",
+    )
+    parser.add_argument(
+        "--show-index",
+        action="store_true",
+        help="是否展示RAG分阶段索引信息（路由/merge/粗排/ColBERT）",
+    )
+    parser.add_argument("--domain", type=str, default=None, help="手动指定检索领域")
+    parser.add_argument(
+        "--routing-method",
+        type=str,
+        default="centroid",
+        choices=["centroid", "llm"],
+        help="路由方式",
+    )
+    parser.add_argument(
+        "--routing-top-k",
+        type=int,
+        default=None,
+        help="路由候选domain数量",
+    )
+    args = parser.parse_args()
+    config_path = Path(args.config)
+    if not config_path.is_absolute():
+        config_path = ROOT_DIR / config_path
+
+    try:
+        runner_module = importlib.import_module("MedicalRag.rag.BasicRagRunner")
+        basic_rag_runner_cls = getattr(runner_module, "BasicRagRunner")
+        basic_rag_options_cls = getattr(runner_module, "BasicRagOptions")
+        build_report = getattr(runner_module, "build_basic_rag_report")
+
+        runner = basic_rag_runner_cls(config_path=str(config_path))
+        result = runner.run(
+            query=args.query,
+            options=basic_rag_options_cls(
+                domain=args.domain,
+                routing_method=args.routing_method,
+                routing_top_k=args.routing_top_k,
+            ),
+        )
+
+        print(
+            build_report(
+                result,
+                show_docs=args.show_docs,
+                show_index=args.show_index,
+            )
+        )
+    except Exception:
+        logger.exception("基础RAG脚本运行失败")
+        raise SystemExit(1)
+
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,64 @@
+# see https://docs.searxng.org/admin/settings/settings.html#settings-use-default-settings
+use_default_settings: true
+server:
+  # base_url is defined in the SEARXNG_BASE_URL environment variable, see .env and docker-compose.yml
+  secret_key: "e4e2d26ef485623734574ae05902fb48211ac42285e64a2b0e6264fe6c223dd1"
+  limiter: false
+  image_proxy: true
+ui:
+  static_use_hash: true
+redis:
+  url: false
+search:
+  formats:
+    - html
+    - json
+engines:
+# 启用默认禁用的引擎
+  - name: baidu
+    engine: baidu
+    disabled: false
+  - name: 360search
+    engine: 360search
+    disabled: false
+  - name: sogou
+    engine: sogou
+    disabled: false
+  - name: bing
+    engine: bing
+    disabled: false
+  - name: bilibili
+    engine: bilibili
+    disabled: false
+  # 禁用默认启用的引擎
+  - name: archlinuxwiki
+    engine: archlinux
+    disabled: true
+  - name: duckduckgo
+    engine: duckduckgo
+    distabled: true
+  - name: github
+    engine: github
+    shortcut: gh
+    disabled: true
+  - name: wikipedia
+    engine: wikipedia
+    disabled: true
+  - name: google
+    engine: google
+    disabled: true
+  - name: youtube
+    engine: youtube_noapi
+    disabled: true
+  - name: duckduckgo
+    engine: duckduckgo
+    disabled: true
+  - name: qwant
+    engine: qwant
+    disabled: true
+  - name: brave
+    engine: brave
+    disabled: true
+  - name: startpage
+    engine: startpage
+    disabled: true

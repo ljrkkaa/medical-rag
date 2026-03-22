@@ -20,6 +20,7 @@ from ..embed.sparse import Vocabulary, BM25Vectorizer
 from .insert import insert_rows
 from copy import deepcopy
 from ..embed.bm25 import BM25SparseEmbedding
+from typing import Optional, Union
 
 get_resolve_path = lambda path, file=__file__: (
     Path(file).parent / Path(path)
@@ -34,6 +35,7 @@ AllFields = [
     "document",
     "source",
     "source_name",
+    "domain",
     "lt_doc_id",
     "chunk_id",
     "summary_dense",
@@ -82,7 +84,27 @@ class MedicalHybridKnowledgeBase:
 
     def _create_text_embedding(self) -> Embeddings:
         """创建文本嵌入模型（用于text_dense字段）"""
+        # 若两路稠密配置完全一致，则复用同一实例，避免重复占用显存/重复加载模型
+        if self.embedding_config.text_dense == self.embedding_config.summary_dense:
+            return self.summary_embedding
         return create_embedding_client(self.embedding_config.text_dense)
+
+    def _ensure_collection_loaded(self, collection_name: str) -> None:
+        """确保集合存在且已加载，避免检索时报 collection not loaded。"""
+        if not self.client.has_collection(collection_name=collection_name):
+            raise ValueError(f"集合不存在: {collection_name}，请先执行入库脚本。")
+
+        # 幂等调用：已加载时重复调用不会影响正确性
+        try:
+            self.client.load_collection(collection_name=collection_name)
+        except Exception as e:
+            # 常见场景：只有集合和数据，但索引尚未构建
+            if "index not found" in str(e).lower():
+                logger.warning("检测到索引缺失，开始自动构建索引并重试加载: %s", e)
+                self.build_index()
+                self.client.load_collection(collection_name=collection_name)
+            else:
+                raise
 
     def _create_collection(self):
         """使用原生 Milvus 客户端创建Collection"""
@@ -130,6 +152,9 @@ class MedicalHybridKnowledgeBase:
             )
             schema.add_field(
                 field_name="source_name", datatype=DataType.VARCHAR, max_length=65535
+            )
+            schema.add_field(
+                field_name="domain", datatype=DataType.VARCHAR, max_length=65535
             )
             schema.add_field(
                 field_name="lt_doc_id", datatype=DataType.VARCHAR, max_length=65535
@@ -224,48 +249,58 @@ class MedicalHybridKnowledgeBase:
             return value
         return str(value)
 
-    def add_documents(self, documents: List[Document]) -> List[str]:
-        """添加文档，自动处理多向量字段"""
-        tokenizer_docs = []
-
+    def add_documents(self, documents: List[Document]) -> int:
+        """添加文档，自动处理多向量字段（已优化为批量向量化调用）"""
         rows = []
+
+        # 1) 预处理：提取所有文本，批量 embedding（避免逐条调用，加速 3-10倍）
+        summaries = []
+        texts = []
         for doc in documents:
-            # 提取问题和答案
             summary = self._to_text(doc.metadata.get("summary", ""))
             text = self._to_text(doc.page_content)
+            summaries.append(summary)
+            texts.append(text)
+
+        # 2) 批量调用向量化（一次性处理整个 batch，而不是逐条）
+        summary_vecs = self.EMBEDDERS["summary_dense"].embed_documents(summaries)
+        text_vecs = self.EMBEDDERS["text_dense"].embed_documents(texts)
+
+        # 稀疏向量批量调用
+        text_sparse_vecs = []
+        if self.embedding_config.text_sparse.provider == "self":
+            text_sparse_vecs = self.EMBEDDERS["text_sparse"].embed_documents(texts)
+
+        # 3) 组织行数据
+        for i, doc in enumerate(documents):
+            summary = summaries[i]
+            text = texts[i]
             doc.metadata["summary"] = summary
             doc.metadata["text"] = text
 
-            # 上线这里要删掉
+            # 只在第一次调用时设置向量（避免重复计算）
             if len(doc.metadata.get("summary_dense", [])) == 0:
-                doc.metadata["summary_dense"] = self.EMBEDDERS[
-                    "summary_dense"
-                ].embed_documents([summary])[0]
-
+                doc.metadata["summary_dense"] = summary_vecs[i]
             if len(doc.metadata.get("text_dense", [])) == 0:
-                doc.metadata["text_dense"] = self.EMBEDDERS[
-                    "text_dense"
-                ].embed_documents([text])[0]
+                doc.metadata["text_dense"] = text_vecs[i]
 
-            tokenizer_docs.append(text)  # 需要进行稀疏向量编码的text字段
             doc_dict = deepcopy(doc.metadata)
             filtered = {k: v for k, v in doc_dict.items() if k in AllFields}
             if not self.milvus_config.auto_id:
-                # 如果不采用自动id，则默认id实现为quesiton的hash值，以便插入时覆盖重复数据
                 filtered["pk"] = doc.metadata.get("hash_id", "")
             filtered["text"] = text
+
             if self.embedding_config.text_sparse.provider == "self":
-                # 如果自管理词表，则还需要进行稀疏向量的构建
-                filtered["text_sparse"] = self.EMBEDDERS["text_sparse"].embed_documents(
-                    [text]
-                )[0]
+                filtered["text_sparse"] = text_sparse_vecs[i]
+
             rows.append(filtered)
 
+        # 4) 一次性批量插入
         insert_rows(
             client=self.client,
             collection_name=self.milvus_config.collection_name,
             rows=rows,
-            show_progress=False,  # 小批量不显示进度条
+            show_progress=False,
         )
         return len(rows)
 
@@ -285,16 +320,37 @@ class MedicalHybridKnowledgeBase:
         single_search_request: SingleSearchRequest,
         collection_name: str,
         output_fields: list[str],
+        domain_filter: Optional[Union[str, list[str]]] = None,  # 按 domain 过滤
     ):
         """Milvus 原生的查询单个问题 https://milvus.io/docs/zh/filtered-search.md"""
         data = self._encode_query(
             query=query, anns_field=single_search_request.anns_field
         )
 
+        # 构造过滤条件：合并用户条件 + domain 过滤
+        filter_expr = single_search_request.expr or ""
+        if domain_filter:
+            if isinstance(domain_filter, list):
+                valid_domains = [
+                    d for d in domain_filter if isinstance(d, str) and d.strip()
+                ]
+                if valid_domains:
+                    domains_expr = ", ".join([f'"{d}"' for d in valid_domains])
+                    domain_cond = f"domain in [{domains_expr}]"
+                else:
+                    domain_cond = ""
+            else:
+                domain_cond = f'domain == "{domain_filter}"'
+            filter_expr = (
+                f"{domain_cond} && ({filter_expr})"
+                if (filter_expr and domain_cond)
+                else (domain_cond or filter_expr)
+            )
+
         result = self.client.search(
             collection_name=collection_name,
             data=[data],
-            filter=single_search_request.expr,
+            filter=filter_expr,
             limit=single_search_request.limit,
             output_fields=output_fields,
             search_params={
@@ -306,12 +362,36 @@ class MedicalHybridKnowledgeBase:
         return result
 
     def _build_ann_search_request(
-        self, query, single_search_request: SingleSearchRequest
+        self,
+        query,
+        single_search_request: SingleSearchRequest,
+        domain_filter: Optional[Union[str, list[str]]] = None,
     ) -> AnnSearchRequest:
         """构建子 AnnSearchRequest 请求"""
         data = self._encode_query(
             query=query, anns_field=single_search_request.anns_field
         )
+
+        # 构造过滤条件：合并用户条件 + domain 过滤
+        filter_expr = single_search_request.expr or ""
+        if domain_filter:
+            if isinstance(domain_filter, list):
+                valid_domains = [
+                    d for d in domain_filter if isinstance(d, str) and d.strip()
+                ]
+                if valid_domains:
+                    domains_expr = ", ".join([f'"{d}"' for d in valid_domains])
+                    domain_cond = f"domain in [{domains_expr}]"
+                else:
+                    domain_cond = ""
+            else:
+                domain_cond = f'domain == "{domain_filter}"'
+            filter_expr = (
+                f"{domain_cond} && ({filter_expr})"
+                if (filter_expr and domain_cond)
+                else (domain_cond or filter_expr)
+            )
+
         search_param = {
             "data": [data],
             "anns_field": single_search_request.anns_field,
@@ -320,7 +400,7 @@ class MedicalHybridKnowledgeBase:
                 "params": single_search_request.search_params,
             },
             "limit": single_search_request.limit,
-            "expr": single_search_request.expr,
+            "expr": filter_expr,
         }
         return AnnSearchRequest(**search_param)
 
@@ -330,7 +410,9 @@ class MedicalHybridKnowledgeBase:
         for item in search.requests:  # 构建子查询
             anns.append(
                 self._build_ann_search_request(
-                    query=search.query, single_search_request=item
+                    query=search.query,
+                    single_search_request=item,
+                    domain_filter=search.domain,
                 )
             )
         if search.fuse.method == "rrf":
@@ -347,10 +429,17 @@ class MedicalHybridKnowledgeBase:
         return result
 
     def search(self, req: SearchRequest) -> List[Document]:
+        # 运行期兜底：避免 collection 未加载导致检索失败
+        self._ensure_collection_loaded(req.collection_name)
+
         if len(req.requests) == 1:
             # 只有一个请求搜索，走普通的search
             outputs = self._search(
-                req.query, req.requests[0], req.collection_name, req.output_fields
+                req.query,
+                req.requests[0],
+                req.collection_name,
+                req.output_fields,
+                domain_filter=req.domain,
             )[0]  # 批量中的第一条，这里先不支持批量查询
         else:
             # 有多个请求搜索，走混合search
@@ -371,6 +460,7 @@ class MedicalHybridKnowledgeBase:
                         "document": item.get("document", ""),
                         "source": item.get("source", ""),
                         "source_name": item.get("source_name", ""),
+                        "domain": item.get("domain", ""),
                         "lt_doc_id": item.get("lt_doc_id", ""),
                     },
                 )
